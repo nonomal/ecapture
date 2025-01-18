@@ -43,9 +43,15 @@ struct connect_event_t {
     u32 pid;
     u32 tid;
     u32 fd;
-    char sa_data[SA_DATA_LEN];
+    u16 sport;
+    u16 dport;
+    __be32 saddr;
+    __be32 daddr;
     char comm[TASK_COMM_LEN];
-};
+    u64 sock;
+    u8 is_destroy;
+    u8 pad[7];
+} __attribute__((packed)); // NOTE: do not leave padding hole in this struct.
 
 struct active_ssl_buf {
     /*
@@ -57,6 +63,11 @@ struct active_ssl_buf {
     u32 fd;
     u32 bio_type;
     const char* buf;
+};
+
+struct tcp_fd_info {
+    u64 sock;
+    int fd;
 };
 
 /***********************************************************
@@ -112,6 +123,14 @@ struct {
     __type(value, u64);
     __uint(max_entries, 10240);
 } ssl_st_fd SEC(".maps");
+
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u64);
+    __type(value, struct tcp_fd_info);
+    __uint(max_entries, 10240);
+} tcp_fd_infos SEC(".maps");
 
 
 /***********************************************************
@@ -436,14 +455,56 @@ int probe_ret_SSL_read(struct pt_regs* ctx) {
     return 0;
 }
 
+
+static __inline struct tcp_fd_info *find_fd_info(struct pt_regs *regs) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    return bpf_map_lookup_elem(&tcp_fd_infos, &pid_tgid);
+}
+
+static __inline struct tcp_fd_info *lookup_and_delete_fd_info(struct pt_regs *regs) {
+    struct tcp_fd_info *fd_info;
+    u64 pid_tgid;
+
+    pid_tgid = bpf_get_current_pid_tgid();
+    fd_info = bpf_map_lookup_elem(&tcp_fd_infos, &pid_tgid);
+    if (fd_info) {
+        bpf_map_delete_elem(&tcp_fd_infos, &pid_tgid);
+    }
+    return fd_info;
+}
+
 // libc : int __connect (int fd, __CONST_SOCKADDR_ARG addr, socklen_t len)
 // kernel : int __sys_connect(int fd, struct sockaddr __user *uservaddr, int addrlen)
 SEC("kprobe/sys_connect")
 int probe_connect(struct pt_regs* ctx) {
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct tcp_fd_info fd_info = {};
+
+    fd_info.fd = PT_REGS_PARM1(ctx);
+    bpf_map_update_elem(&tcp_fd_infos, &pid_tgid, &fd_info, BPF_ANY);
+    return 0;
+}
+
+SEC("kprobe/inet_stream_connect")
+int probe_inet_stream_connect(struct pt_regs* ctx) {
+    struct tcp_fd_info *fd_info;
+
+    fd_info = find_fd_info(ctx);
+    if (fd_info) {
+        fd_info->sock = (u64)(void *) PT_REGS_PARM1(ctx);
+    }
+    return 0;
+}
+
+static __inline int kretprobe_connect(struct pt_regs *ctx, int fd, struct sock *sk, const bool active) {
     u64 current_pid_tgid = bpf_get_current_pid_tgid();
     u32 pid = current_pid_tgid >> 32;
     u64 current_uid_gid = bpf_get_current_uid_gid();
     u32 uid = current_uid_gid;
+    u16 address_family = 0;
+    u64 addrs;
+    u32 ports;
 
 #ifndef KERNEL_LESS_5_2
     // if target_ppid is 0 then we target all pids
@@ -455,16 +516,15 @@ int probe_connect(struct pt_regs* ctx) {
     }
 #endif
 
-    u32 fd = (u32)PT_REGS_PARM1(ctx);
-    struct sockaddr* saddr = (struct sockaddr*)PT_REGS_PARM2(ctx);
-    if (!saddr) {
+    bpf_probe_read_kernel(&address_family, sizeof(address_family), &sk->__sk_common.skc_family);
+    if (address_family != AF_INET) {
         return 0;
     }
-    sa_family_t address_family = 0;
-    bpf_probe_read_user(&address_family, sizeof(address_family),
-                        &saddr->sa_family);
 
-    if (address_family != AF_INET) {
+    // if the connection hasn't been established yet, the ports or addrs are 0.
+    bpf_probe_read_kernel(&addrs, sizeof(addrs), &sk->__sk_common.skc_addrpair);
+    bpf_probe_read_kernel(&ports, sizeof(ports), &sk->__sk_common.skc_portpair);
+    if (ports == 0 || addrs == 0) {
         return 0;
     }
 
@@ -476,14 +536,95 @@ int probe_connect(struct pt_regs* ctx) {
     conn.pid = pid;
     conn.tid = current_pid_tgid;
     conn.fd = fd;
-    bpf_probe_read_user(&conn.sa_data, SA_DATA_LEN, &saddr->sa_data);
+    if (active) {
+        conn.dport = bpf_ntohs((u16)ports);
+        conn.sport = ports >> 16;
+        conn.daddr = (__be32)addrs;
+        conn.saddr = (__be32)(addrs >> 32);
+    } else {
+        conn.sport = bpf_ntohs((u16)ports);
+        conn.dport = ports >> 16;
+        conn.saddr = (__be32)addrs;
+        conn.daddr = (__be32)(addrs >> 32);
+    }
     bpf_get_current_comm(&conn.comm, sizeof(conn.comm));
+    conn.sock = (u64)sk;
 
     bpf_perf_event_output(ctx, &connect_events, BPF_F_CURRENT_CPU, &conn,
                           sizeof(struct connect_event_t));
     return 0;
 }
 
+SEC("kretprobe/sys_connect")
+int retprobe_connect(struct pt_regs* ctx) {
+    struct tcp_fd_info *fd_info;
+    struct socket *sock;
+    struct sock *sk;
+
+    fd_info = lookup_and_delete_fd_info(ctx);
+    if (fd_info) {
+        sock = (typeof(sock)) fd_info->sock;
+        bpf_probe_read_kernel(&sk, sizeof(sk), &sock->sk);
+        if (sk) {
+            return kretprobe_connect(ctx, fd_info->fd, sk, true);
+        }
+    }
+    return 0;
+}
+
+#ifndef IS_ERR_VALUE
+#define MAX_ERRNO	4095
+#define IS_ERR_VALUE(x) ((unsigned long)(void *)(x) >= (unsigned long)-MAX_ERRNO)
+#endif
+
+SEC("kprobe/inet_accept")
+int probe_inet_accept(struct pt_regs* ctx) {
+    struct tcp_fd_info *fd_info;
+
+    fd_info = find_fd_info(ctx);
+    if (fd_info) {
+        fd_info->sock = (u64)(void *) PT_REGS_PARM2(ctx);
+    }
+    return 0;
+}
+
+SEC("kretprobe/__sys_accept4")
+int retprobe_accept4(struct pt_regs* ctx) {
+    struct tcp_fd_info *fd_info;
+    struct socket *sock;
+    struct sock *sk;
+    int fd;
+
+    fd = PT_REGS_RC(ctx);
+    if (fd < 0) {
+        return 0;
+    }
+
+    fd_info = lookup_and_delete_fd_info(ctx);
+    if (fd_info) {
+        sock = (typeof(sock))(void *) fd_info->sock;
+        bpf_probe_read_kernel(&sk, sizeof(sk), &sock->sk);
+        if (sk) {
+            return kretprobe_connect(ctx, fd, sk, false);
+        }
+    }
+    return 0;
+}
+
+SEC("kprobe/tcp_v4_destroy_sock")
+int probe_tcp_v4_destroy_sock(struct pt_regs* ctx) {
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    struct connect_event_t conn;
+
+    __builtin_memset(&conn, 0, sizeof(conn));
+    conn.sock = (u64)sk;
+    conn.is_destroy = 1;
+
+    bpf_perf_event_output(ctx, &connect_events, BPF_F_CURRENT_CPU, &conn,
+                          sizeof(struct connect_event_t));
+
+    return BPF_OK;
+}
 
 
 // int SSL_set_fd(SSL *s, int fd)
