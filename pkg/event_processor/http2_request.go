@@ -27,8 +27,7 @@ import (
 	"golang.org/x/net/http2/hpack"
 )
 
-const H2Magic = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-const H2MagicLen = len(H2Magic)
+const ClientPrefaceLen = len(http2.ClientPreface)
 
 type HTTP2Request struct {
 	framer     *http2.Framer
@@ -40,9 +39,13 @@ type HTTP2Request struct {
 }
 
 func (h2r *HTTP2Request) detect(payload []byte) error {
-	data := string(payload[0:H2MagicLen])
-	if data != H2Magic {
-		return errors.New("Not match http2 magic")
+	payloadLen := len(payload)
+	if payloadLen < ClientPrefaceLen {
+		return errors.New("Payload less than http2 ClientPreface")
+	}
+	data := string(payload[0:ClientPrefaceLen])
+	if data != http2.ClientPreface {
+		return errors.New("Not match http2 ClientPreface")
 	}
 	return nil
 }
@@ -51,7 +54,6 @@ func (h2r *HTTP2Request) Init() {
 	h2r.reader = bytes.NewBuffer(nil)
 	h2r.bufReader = bufio.NewReader(h2r.reader)
 	h2r.framer = http2.NewFramer(nil, h2r.bufReader)
-	h2r.framer.ReadMetaHeaders = hpack.NewDecoder(0, nil)
 }
 
 func (h2r *HTTP2Request) Write(b []byte) (int, error) {
@@ -83,14 +85,15 @@ func (h2r *HTTP2Request) IsDone() bool {
 }
 
 func (h2r *HTTP2Request) Display() []byte {
-	_, err := h2r.bufReader.Discard(H2MagicLen)
+	_, err := h2r.bufReader.Discard(ClientPrefaceLen)
 	if err != nil {
 		log.Println("[http2 request] Discard HTTP2 Magic error:", err)
 		return h2r.reader.Bytes()
 	}
-	var encoding string
-	dataBuf := bytes.NewBuffer(nil)
+	encodingMap := make(map[uint32]string)
+	dataBufMap := make(map[uint32]*bytes.Buffer)
 	frameBuf := bytes.NewBufferString("")
+	hdec := hpack.NewDecoder(4096, nil)
 	for {
 		f, err := h2r.framer.ReadFrame()
 		if err != nil {
@@ -100,46 +103,67 @@ func (h2r *HTTP2Request) Display() []byte {
 			break
 		}
 		switch f := f.(type) {
-		case *http2.MetaHeadersFrame:
-			frameBuf.WriteString(fmt.Sprintf("\nFrame Type\t=>\tHEADERS\n"))
-			for _, header := range f.Fields {
-				frameBuf.WriteString(fmt.Sprintf("%s\n", header.String()))
-				if header.Name == "content-encoding" {
-					encoding = header.Value
+		case *http2.HeadersFrame:
+			streamID := f.StreamID
+			frameBuf.WriteString(fmt.Sprintf("\nFrame Type\t=>\tHEADERS\nFrame StreamID\t=>\t%d\n", streamID))
+			if f.HeadersEnded() {
+				fields, err := hdec.DecodeFull(f.HeaderBlockFragment())
+				for _, header := range fields {
+					frameBuf.WriteString(fmt.Sprintf("%s\n", header.String()))
+					if header.Name == "content-encoding" {
+						encodingMap[streamID] = header.Value
+					}
 				}
+				if err != nil {
+					frameBuf.WriteString("Incorrect HPACK context, Please use PCAP mode to get correct header fields ...\n")
+				}
+			} else {
+				frameBuf.WriteString("Not Supported HEADERS Frame with CONTINUATION frames\n")
 			}
 		case *http2.DataFrame:
-			_, err := dataBuf.Write(f.Data())
-			if err != nil {
-				log.Println("[http2 request] Write HTTP2 Data Frame buffuer error:", err)
+			streamID := f.StreamID
+			frameBuf.WriteString(fmt.Sprintf("\nFrame Type\t=>\tDATA\nFrame StreamID\t=>\t%d\n", streamID))
+			payload := f.Data()
+			switch encodingMap[streamID] {
+			case "gzip":
+				h2r.packerType = PacketTypeGzip
+				frameBuf.WriteString("Partial entity body with gzip encoding ... \n")
+				if dataBufMap[streamID] == nil {
+					dataBufMap[streamID] = bytes.NewBuffer(nil)
+				}
+				_, err := dataBufMap[streamID].Write(payload)
+				if err != nil {
+					log.Println("[http2 request] Write HTTP2 Data Frame buffuer error:", err)
+				}
+			default:
+				h2r.packerType = PacketTypeNull
+				frameBuf.Write(payload)
+				frameBuf.WriteString("\n")
 			}
 		default:
 			fh := f.Header()
-			frameBuf.WriteString(fmt.Sprintf("\nFrame Type\t=>\t%s\n", fh.Type.String()))
+			frameBuf.WriteString(fmt.Sprintf("\nFrame Type\t=>\t%s\nFrame StreamID\t=>\t%d\n", fh.Type.String(), fh.StreamID))
 		}
 	}
-	// merge data frame
-	if dataBuf.Len() > 0 {
-		frameBuf.WriteString(fmt.Sprintf("\nFrame Type\t=>\tDATA\n"))
-		payload := dataBuf.Bytes()
-		switch encoding {
-		case "gzip":
+	// merge data frame with encoding
+	for id, buf := range dataBufMap {
+		if buf.Len() > 0 && encodingMap[id] == "gzip" {
+			payload := buf.Bytes()
 			reader, err := gzip.NewReader(bytes.NewReader(payload))
 			if err != nil {
 				log.Println("[http2 request] Create gzip reader error:", err)
-				break
+				continue
 			}
+			defer reader.Close()
 			payload, err = io.ReadAll(reader)
 			if err != nil {
 				log.Println("[http2 request] Uncompress gzip data error:", err)
-				break
+				continue
 			}
-			h2r.packerType = PacketTypeGzip
-			defer reader.Close()
-		default:
-			h2r.packerType = PacketTypeNull
+			frameBuf.WriteString(fmt.Sprintf("\nMerged Data Frame, StreamID\t=>\t%d\n\n", id))
+			frameBuf.Write(payload)
+			frameBuf.WriteString("\n")
 		}
-		frameBuf.Write(payload)
 	}
 	return frameBuf.Bytes()
 }

@@ -1,6 +1,100 @@
-# v0.8.11 (2024-12-01)
+# v0.9.4 (2025-02-16)
 
 ## What's Changed
+
+**Full Changelog**: https://github.com/gojue/ecapture/compare/v0.9.3...v0.9.4
+<hr>
+
+# v0.9.3 (2025-01-18)
+## What's Changed
+
+* fix(make): improve error handling and clean target logic in Makefile by @cfc4n
+  in https://github.com/gojue/ecapture/pull/713
+* fix: incorrect CAP_BPF check method by @hengyoush in https://github.com/gojue/ecapture/pull/715
+* feat(ci): update GitHub Action runners with Linux arm64 host by @cfc4n in https://github.com/gojue/ecapture/pull/722
+
+## New Contributors
+
+* @hengyoush made their first contribution in https://github.com/gojue/ecapture/pull/715
+
+**Full Changelog**: https://github.com/gojue/ecapture/compare/v0.9.2...v0.9.3
+<hr>
+
+# v0.9.2 (2024-12-29)
+
+## What's Changed
+
+* Limit GitHub action serialization and increase CI caching function by @cfc4n
+  in https://github.com/gojue/ecapture/pull/698
+* fix : add openssl_3_1_0 target by @cuijing90 in https://github.com/gojue/ecapture/pull/704
+* performance: use first h2 frame header detect instead of read first frame from whole payload by @yuweizzz
+  in https://github.com/gojue/ecapture/pull/705
+* fix #697, When building in nocore mode, use only non-core bytecode les by default. by @cfc4n
+  in https://github.com/gojue/ecapture/pull/708
+* fix: check CAP_BPF by capget syscall by @Asphaltt in https://github.com/gojue/ecapture/pull/707
+* fixed the issue of missing cross-compilation environment. by @cfc4n in https://github.com/gojue/ecapture/pull/709
+* fix(ci): fix github action release notes generation by @cfc4n in https://github.com/gojue/ecapture/pull/710
+
+## New Contributors
+
+* @cuijing90 made their first contribution in https://github.com/gojue/ecapture/pull/704
+
+**Full Changelog**: https://github.com/gojue/ecapture/compare/v0.9.1...v0.9.2
+<hr>
+
+# v0.9.1 (2024-12-18)
+
+## What's Changed
+
+* fix: invalid indirect read from stack by @Asphaltt in https://github.com/gojue/ecapture/pull/694
+* fix: use other hooks to probe 5-tuple by @Asphaltt in https://github.com/gojue/ecapture/pull/695
+
+**Full Changelog**: https://github.com/gojue/ecapture/compare/v0.9.0...v0.9.1
+<hr>
+
+# v0.9.0 (2024-12-15)
+
+## What's Changed
+
+* fix: pcap filter not work as expected by @yuweizzz in https://github.com/gojue/ecapture/pull/680
+* feat support capture zsh command by @SenberHu in https://github.com/gojue/ecapture/pull/683
+* feat: detect CAP_BPF by @Asphaltt in https://github.com/gojue/ecapture/pull/681
+* feat: Enrich addr info with remote addr info by @Asphaltt in https://github.com/gojue/ecapture/pull/684
+* fix ecapture docker images CVE-2024-24790 by @cfc4n in https://github.com/gojue/ecapture/pull/687
+* fix #685, the Processor print "incoming chan is full",and exit. by @cfc4n
+  in https://github.com/gojue/ecapture/pull/686
+* feat: Support for new version detection feature. by @cfc4n in https://github.com/gojue/ecapture/pull/688
+* build(deps): bump golang.org/x/crypto from 0.23.0 to 0.31.0 by @dependabot
+  in https://github.com/gojue/ecapture/pull/690
+* feat: Clean map when destroy socket by @Asphaltt in https://github.com/gojue/ecapture/pull/691
+
+## New Contributors
+
+* @SenberHu made their first contribution in https://github.com/gojue/ecapture/pull/683
+
+**Full Changelog**: https://github.com/gojue/ecapture/compare/v0.8.12...v0.9.0
+<hr>
+
+# v0.8.12 (2024-12-02)
+
+## What's Changed
+
+* Fix the version number string cannot be found in the dynamic library of boringssl. by @cfc4n
+  in https://github.com/gojue/ecapture/pull/679
+
+**Full Changelog**: https://github.com/gojue/ecapture/compare/v0.8.11...v0.8.12
+<hr>
+
+# v0.8.11 (2024-12-01)
+## What's Changed
+
+* fix(user/module): read version from libcrypto.so by @xxxxxliil in https://github.com/gojue/ecapture/pull/661
+* fix MariaDB typo in README.md by @robertsilen in https://github.com/gojue/ecapture/pull/672
+* Add a reminder for failure when hooking libnss3.so. by @cfc4n in https://github.com/gojue/ecapture/pull/677
+
+## New Contributors
+
+* @robertsilen made their first contribution in https://github.com/gojue/ecapture/pull/672
 
 **Full Changelog**: https://github.com/gojue/ecapture/compare/v0.8.10...v0.8.11
 <hr>
